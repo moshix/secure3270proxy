@@ -1,0 +1,67 @@
+[
+    {
+        "name": "HOUCICS  - MVS 3.8j CICS 1.7",
+        "host": "moshix.dynu.net",
+        "port": 3279
+    },
+    {
+        "name": "HOUVMSP6 - VM/SP rel6 MVS/SP",
+        "host": "moshix.dynu.net",
+        "port": 3278
+    },
+    {
+        "name": "VM/370   - MVS38,OS/VS1 guests",
+        "host": "moshix.dynu.net",
+        "port": 3280
+    },
+    {
+        "name": "HOUVMESA - MVS/SP - MVS/XA",
+        "host": "34.72.29.100",
+        "port": 2300
+    },
+    {
+        "name": "MOSHIX   - VM/SP rel 5",
+        "host": "moshix.dynu.net",
+        "port": 3290
+    },
+    {
+        "name": "MOSHIX2  - VM/SP HPO rel 5",
+        "host": "moshix.dynu.net",
+        "port": 3270
+    },
+    {
+        "name": "VM/HPO 4.2                  ",
+        "host": "moshix.dynu.net",
+        "port": 3295
+    },
+    {
+        "name": "VM/SP r4    ",
+        "host": "moshix.dynu.net",
+        "port": 13270
+    },
+    {   
+        "name": "MVS/SP 1.3.5 with CICS 1.7   ",
+        "host": "34.72.29.100",
+        "port": 3270 
+    },
+    {
+        "name": "MVS/SP 1.3.5 3rd Gen BP",
+        "host": "34.72.29.100",
+        "port": 3299
+    },
+    {
+        "name": "MVS/XA 2.2.3                 ", 
+        "host": "34.72.29.100",
+         "port": 3280 
+    },
+    {
+        "name": "MVS/SP 1.3.4 JM",
+        "host": "34.72.29.100",
+         "port": 3090
+    },
+    {
+        "name": "Forum3270",
+        "host": "www.moshix.tech",
+         "port": 2300
+    }
+]

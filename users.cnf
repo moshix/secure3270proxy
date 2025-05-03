@@ -1,0 +1,5 @@
+# Users configuration file for secure3270proxy
+# Format: username/password (one user per line)
+
+admin/banana/admin.list
+moshix/banana/moshix.list

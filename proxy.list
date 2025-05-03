@@ -1,0 +1,22 @@
+[
+    {
+        "name": "HOUCICS  - MVS 3.8j CICS 1.7",
+        "host": "moshix.dynu.net",
+        "port": 3279
+    },
+    {
+        "name": "VM/370   - MVS38,OS/VS1 guests",
+        "host": "moshix.dynu.net",
+        "port": 3280
+    },
+    {
+        "name": "HOUVMESA - MVS/SP - MVS/XA",
+        "host": "34.72.29.100",
+        "port": 2300
+    },
+    {
+        "name": "Forum3270 ",
+        "host": "www.moshix.tech",
+        "port": 2300
+    }
+]
