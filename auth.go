@@ -1,4 +1,19 @@
 package main
+/*
+copyright 2025 by Moshix
+this is an authentication front end to racingsmar's proxy3270 library.
+It will be used to authenticate users to the proxy3270 library,
+and then pass the connection to remote mainframes as listed in the
+hosts lists pointd to by the secure3270.cnf file.
+check out github.com/racingmars/go3270 for the proxy3270 library.
+
+v 0.1 build the authentication screen
+v 0.2 add support for TLS
+v 0.3 renegotiate telnet after connection is closed
+v 0.4 provide a user and password list
+v 0.5 per user host lists!
+:wq 
+*/
 
 import (
 	"bufio"
