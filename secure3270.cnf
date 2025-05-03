@@ -1,0 +1,17 @@
+  1 # Configuration file for secure3270proxy (secure3270.cnf)
+  2 # Lines starting with # are comments
+  3 # Note: Authentication credentials are stored in users.cnf
+    # copyright 2025 by moshix
+  4
+  5 # Proxy settings
+  6 port=3270
+  7
+  8 # TLS settings
+  9 tls=enabled           # enabled or disabled
+ 10 tlsport=3271
+ 11 tlscert=server.crt
+ 12 tlskey=server.key
+ 13
+ 14 # Host list file (JSON format) this is the defaul hosts file if nothign is listed in users.cnf
+ 15 hostfile=proxy.list
+~
