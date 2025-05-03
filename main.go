@@ -162,38 +162,134 @@ func startTLSServer(config *Config, debug, debug3270, trace bool) {
 		return
 	}
 
+	// TLS server auto-recovery loop
+	for {
+		startTime := time.Now()
+		if err := runTLSServer(config, debug, debug3270, trace); err != nil {
+			log.Printf("TLS server error: %v", err)
+
+			// If the server ran for a reasonable amount of time before failing,
+			// it's likely a temporary issue, so we can restart immediately
+			if time.Since(startTime) > 5*time.Minute {
+				log.Printf("TLS server restarting immediately...")
+			} else {
+				// If it failed quickly, there might be a more serious issue
+				// Wait before retrying to avoid rapid restart loops
+				log.Printf("TLS server will restart in 30 seconds...")
+				time.Sleep(30 * time.Second)
+			}
+		} else {
+			// Normal shutdown - wait before restarting
+			log.Printf("TLS server shut down, restarting in 10 seconds...")
+			time.Sleep(10 * time.Second)
+		}
+	}
+}
+
+func runTLSServer(config *Config, debug, debug3270, trace bool) error {
 	cert, err := tls.LoadX509KeyPair(config.TLSCert, config.TLSKey)
 	if err != nil {
-		log.Printf("Failed to load TLS certificates: %v", err)
-		return
+		return fmt.Errorf("failed to load TLS certificates: %v", err)
 	}
 
 	tlsConfig := &tls.Config{
 		Certificates:             []tls.Certificate{cert},
-		MinVersion:               tls.VersionTLS10, // Very permissive - TLS 1.0
+		MinVersion:               tls.VersionTLS10,
 		MaxVersion:               tls.VersionTLS13,
 		PreferServerCipherSuites: true,
-		InsecureSkipVerify:       true, // Very permisive
+		InsecureSkipVerify:       true,
 	}
 
 	listener, err := tls.Listen("tcp", fmt.Sprintf(":%d", config.TLSPort), tlsConfig)
 	if err != nil {
-		log.Printf("Failed to start TLS listener: %v", err)
-		return
+		return fmt.Errorf("failed to start TLS listener: %v", err)
 	}
 	defer listener.Close()
 
 	log.Printf("TLS Proxy3270 listening on port %d", config.TLSPort)
 
 	for {
+		// Accept connections with a timeout to allow for periodic health checks
+		listener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Minute))
 		conn, err := listener.Accept()
+
 		if err != nil {
-			log.Printf("TLS accept error: %v", err)
-			continue
+			// Check if this is just a timeout (which we use for health checking)
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue // This is just our periodic timeout, not a real error
+			}
+			return fmt.Errorf("TLS accept error: %v", err)
 		}
 
-		go handleConnection(conn, config, debug, debug3270, trace)
+		// Handle each connection in a separate goroutine
+		go handleTLSConnection(conn, config, debug, debug3270, trace)
 	}
+}
+
+func handleTLSConnection(conn net.Conn, config *Config, debug, debug3270, trace bool) {
+	// Ensure connection is always closed when we're done
+	defer conn.Close()
+
+	// For TLS connections, add a small delay to ensure handshake completes
+	time.Sleep(500 * time.Millisecond)
+
+	// Set initial timeout for telnet negotiation
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	// Negotiate telnet protocol with direct error handling
+	if err := go3270.NegotiateTelnet(conn); err != nil {
+		log.Printf("TLS telnet negotiation failed: %v", err)
+		return
+	}
+
+	// After successful negotiation, remove the deadline for regular operation
+	conn.SetDeadline(time.Time{})
+
+	// Handle authentication first
+	authSession, err := HandleAuth(conn)
+	if err != nil {
+		log.Printf("TLS authentication failed: %v", err)
+		if err.Error() == "user requested logoff with PF9" {
+			log.Printf("TLS user terminated connection with PF9")
+		}
+		return
+	}
+
+	if !authSession.authenticated {
+		log.Printf("TLS user authentication failed")
+		return
+	}
+
+	log.Printf("TLS user %s authenticated successfully", authSession.username)
+
+	// Create a copy of the config to override with user-specific settings if needed
+	userConfig := *config
+
+	// If user has a specific host file, use it
+	if authSession.hostFile != "" {
+		log.Printf("Using user-specific host file: %s", authSession.hostFile)
+		userConfig.HostFile = authSession.hostFile
+
+		// Load hosts from the user-specific file
+		proxyData, err := os.ReadFile(userConfig.HostFile)
+		if err != nil {
+			log.Printf("Failed to read user host file %s: %v, falling back to default",
+				userConfig.HostFile, err)
+		} else {
+			// Parse the hosts from the user's host file
+			var hosts []Host
+			if err := json.Unmarshal(proxyData, &hosts); err != nil {
+				log.Printf("Failed to parse user host file %s: %v, falling back to default",
+					userConfig.HostFile, err)
+			} else {
+				// Successfully loaded user's hosts
+				userConfig.Hosts = hosts
+			}
+		}
+	}
+
+	// Now proceed with the normal proxy3270 host selection and connection handling
+	handleProxyConnection(conn, &userConfig, authSession)
 }
 
 func main() {
@@ -225,10 +321,41 @@ func main() {
 		go startTLSServer(config, *debug, *debug3270, *trace)
 	}
 
-	// Start non-TLS listener
+	// Start non-TLS listener with auto-recovery
+	go startStandardServer(config, *debug, *debug3270, *trace)
+
+	// Keep the main goroutine running
+	select {}
+}
+
+func startStandardServer(config *Config, debug, debug3270, trace bool) {
+	for {
+		startTime := time.Now()
+		if err := runStandardServer(config, debug, debug3270, trace); err != nil {
+			log.Printf("Standard server error: %v", err)
+
+			// If the server ran for a reasonable amount of time before failing,
+			// it's likely a temporary issue, so we can restart immediately
+			if time.Since(startTime) > 5*time.Minute {
+				log.Printf("Standard server restarting immediately...")
+			} else {
+				// If it failed quickly, there might be a more serious issue
+				// Wait before retrying to avoid rapid restart loops
+				log.Printf("Standard server will restart in 30 seconds...")
+				time.Sleep(30 * time.Second)
+			}
+		} else {
+			// Normal shutdown - wait before restarting
+			log.Printf("Standard server shut down, restarting in 10 seconds...")
+			time.Sleep(10 * time.Second)
+		}
+	}
+}
+
+func runStandardServer(config *Config, debug, debug3270, trace bool) error {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", config.Port))
 	if err != nil {
-		log.Fatalf("Failed to start listener: %v", err)
+		return fmt.Errorf("failed to start standard listener: %v", err)
 	}
 	defer listener.Close()
 
@@ -236,45 +363,55 @@ func main() {
 	log.Printf("Secure3270Proxy startup complete")
 
 	for {
+		// Accept connections with a timeout to allow for periodic health checks
+		listener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Minute))
 		conn, err := listener.Accept()
+
 		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
-			continue
+			// Check if this is just a timeout (which we use for health checking)
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue // This is just our periodic timeout, not a real error
+			}
+			return fmt.Errorf("Standard accept error: %v", err)
 		}
 
-		go handleConnection(conn, config, *debug, *debug3270, *trace)
+		// Handle each connection in a separate goroutine
+		go handleStandardConnection(conn, config, debug, debug3270, trace)
 	}
 }
 
-func handleConnection(conn net.Conn, config *Config, debug, debug3270, trace bool) {
+func handleStandardConnection(conn net.Conn, config *Config, debug, debug3270, trace bool) {
+	// Ensure connection is always closed when we're done
 	defer conn.Close()
 
-	// Set connection timeouts
-	conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	// Set initial timeout for telnet negotiation
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	// Negotiate telnet protocol for 3270 emulation
+	// Negotiate telnet protocol with direct error handling
 	if err := go3270.NegotiateTelnet(conn); err != nil {
-		log.Printf("Telnet negotiation failed: %v", err)
+		log.Printf("Standard telnet negotiation failed: %v", err)
 		return
 	}
+
+	// After successful negotiation, remove the deadline for regular operation
+	conn.SetDeadline(time.Time{})
 
 	// Handle authentication first
 	authSession, err := HandleAuth(conn)
 	if err != nil {
-		log.Printf("Authentication failed: %v", err)
-		// If user pressed PF9 to logoff, it's an expected termination
+		log.Printf("Standard authentication failed: %v", err)
 		if err.Error() == "user requested logoff with PF9" {
-			log.Printf("User terminated connection with PF9")
+			log.Printf("Standard user terminated connection with PF9")
 		}
 		return
 	}
 
 	if !authSession.authenticated {
-		log.Printf("User authentication failed")
+		log.Printf("Standard user authentication failed")
 		return
 	}
 
-	log.Printf("User %s authenticated successfully", authSession.username)
+	log.Printf("Standard user %s authenticated successfully", authSession.username)
 
 	// Create a copy of the config to override with user-specific settings if needed
 	userConfig := *config
@@ -302,6 +439,6 @@ func handleConnection(conn net.Conn, config *Config, debug, debug3270, trace boo
 		}
 	}
 
-	// Now procede with the normaal proxy3270 host selection and connection handlin
+	// Now proceed with the normal proxy3270 host selection and connection handling
 	handleProxyConnection(conn, &userConfig, authSession)
 }

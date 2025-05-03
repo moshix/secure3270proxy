@@ -18,12 +18,14 @@ v 0.6 selecing X or 99 from hosts view will disconnect session
 */
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/racingmars/go3270"
@@ -178,126 +180,162 @@ func handleProxyConnection(conn net.Conn, config *Config, authSession *authSessi
 }
 
 func connectToHost(clientConn net.Conn, host Host) error {
+	// Set a timeout for the un-negotiation
+	clientConn.SetDeadline(time.Now().Add(10 * time.Second))
+
 	// Un-negotiate telnet protocol before connecting to host
 	if err := go3270.UnNegotiateTelnet(clientConn, 2*time.Second); err != nil {
-		return fmt.Errorf("telnet un-negotiation failed: %v", err)
+		log.Printf("Warning: telnet un-negotiation failed: %v", err)
+		// Continue anyway - some clients may not require proper un-negotiation
 	}
 
-	// Connect to the target host
-	targetConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", host.Host, host.Port))
+	// Connect to the target host with a timeout
+	dialer := net.Dialer{Timeout: 15 * time.Second}
+	targetConn, err := dialer.Dial("tcp", fmt.Sprintf("%s:%d", host.Host, host.Port))
 	if err != nil {
-		// If we failed to connect, re-negotiate telnet before returning the error
-		// so the client can display the error properly
+		// If connection failed, re-negotiate telnet to show error message
+		clientConn.SetDeadline(time.Now().Add(10 * time.Second))
 		_ = go3270.NegotiateTelnet(clientConn)
+		clientConn.SetDeadline(time.Time{}) // Remove deadline
 		return fmt.Errorf("failed to connect to target: %v", err)
 	}
-	defer targetConn.Close()
 
-	// Create channels for error handling
+	// Create buffers for error handling and data transfer
+	clientBuffer := make([]byte, 32*1024)
+	targetBuffer := make([]byte, 32*1024)
+
+	// Create a cancel context for proper cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use WaitGroup to ensure both goroutines finish
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Create error channel
 	errChan := make(chan error, 2)
-	doneChan := make(chan struct{})
-	stopProxyChan := make(chan struct{})
 
-	// Forward data in both directions with cancellation
-	go forwardWithCancel(clientConn, targetConn, errChan, stopProxyChan, "client->target")
-	go forwardWithCancel(targetConn, clientConn, errChan, stopProxyChan, "target->client")
-
-	// Wait for either connection to close
-	var forwardErr error
-	select {
-	case forwardErr = <-errChan:
-		// Connection closed, signal both goroutines to stop
-		close(stopProxyChan)
-		close(doneChan)
-
-		// Let the goroutines finish cleanup (discard their errors)
-		for i := 0; i < 2; i++ {
+	// Forward data client -> target
+	go func() {
+		defer wg.Done()
+		for {
 			select {
-			case <-errChan:
-			case <-time.After(100 * time.Millisecond):
+			case <-ctx.Done():
+				return
+			default:
+				// Set short timeout to check context regularly
+				clientConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+				n, err := clientConn.Read(clientBuffer)
+
+				if err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						continue // Just a timeout, try again
+					}
+					// Real error
+					errChan <- err
+					cancel() // Cancel other goroutine
+					return
+				}
+
+				if n > 0 {
+					// Try sending data with timeout
+					targetConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+					_, err := targetConn.Write(clientBuffer[:n])
+					if err != nil {
+						errChan <- err
+						cancel()
+						return
+					}
+				}
 			}
 		}
+	}()
+
+	// Forward data target -> client
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				// Set short timeout to check context regularly
+				targetConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+				n, err := targetConn.Read(targetBuffer)
+
+				if err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						continue // Just a timeout, try again
+					}
+					// Real error
+					errChan <- err
+					cancel() // Cancel other goroutine
+					return
+				}
+
+				if n > 0 {
+					// Try sending data with timeout
+					clientConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+					_, err := clientConn.Write(targetBuffer[:n])
+					if err != nil {
+						errChan <- err
+						cancel()
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	// Wait for an error or EOF
+	var finalErr error
+	select {
+	case finalErr = <-errChan:
+		// An error occurred, cancel both goroutines
+		cancel()
 	}
+
+	// Close the target connection
+	targetConn.Close()
+
+	// Wait for both goroutines to finish
+	wg.Wait()
 
 	// Reset the client connection to ensure clean state
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetLinger(0) // Set SO_LINGER to 0 to discard any pending data
+		tcpConn.SetLinger(0) // Discard any pending data
 	}
 
-	// Wait for the connection to settle
+	// Give connections time to settle
 	time.Sleep(500 * time.Millisecond)
 
-	// Re-negotiate telnet protocol with increased timeout for better reliability
+	// Re-negotiate telnet protocol with increased timeout and retry
 	var negotiateErr error
-	for attempts := 0; attempts < 5; attempts++ {
-		// Use a fresh connection deadline for each attempt
-		clientConn.SetDeadline(time.Now().Add(30 * time.Second))
+	for attempts := 0; attempts < 3; attempts++ {
+		// Use a fresh deadline for each attempt
+		clientConn.SetDeadline(time.Now().Add(10 * time.Second))
 
+		// Try to renegotiate telnet
 		negotiateErr = go3270.NegotiateTelnet(clientConn)
 		if negotiateErr == nil {
-			// Successfully re-negotiated telnet
-			clientConn.SetDeadline(time.Now().Add(5 * time.Minute)) // Reset to normal timeout
+			// Success!
+			clientConn.SetDeadline(time.Time{}) // Remove deadline
 			log.Printf("Successfully re-negotiated telnet after %d attempts", attempts+1)
 			break
 		}
 
-		// Log the error and retry
 		log.Printf("Telnet re-negotiation attempt %d failed: %v", attempts+1, negotiateErr)
-		time.Sleep(1 * time.Second)
+		time.Sleep(1 * time.Second) // Wait before retry
 	}
 
-	if negotiateErr != nil {
-		log.Printf("All telnet re-negotiation attempts failed, last error: %v", negotiateErr)
-		// Even though negotiation failed, try to continue anyway
-		// This allows the user to at least see an error message in the host menu
+	// Log errors for debugging (only log non-EOF errors)
+	if finalErr != nil && finalErr != io.EOF {
+		log.Printf("DEBUG: Connection error: %v", finalErr)
 	}
 
-	// Log any original error for debugging purposes
-	if forwardErr != nil && forwardErr != io.EOF {
-		log.Printf("DEBUG: Original connection error: %v", forwardErr)
-	}
+	// Remove any deadlines
+	clientConn.SetDeadline(time.Time{})
 
-	// Always return nil to get back to host menu, even if there were errors
-	// The key insight is we need to continue even after errors
+	// Always return nil to get back to the host menu
 	return nil
-}
-
-func forwardWithCancel(dst net.Conn, src net.Conn, errChan chan error, stopChan chan struct{}, direction string) {
-	buf := make([]byte, 32*1024)
-
-	for {
-		select {
-		case <-stopChan:
-			// Stopping was requested
-			errChan <- fmt.Errorf("forwarding %s canceled", direction)
-			return
-		default:
-			// Set a short read deadline to allow checking the stop channel frequently
-			src.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			n, err := src.Read(buf)
-
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// This is just our short timeout for checking stopChan, keep looping
-					continue
-				}
-				// Real error, report it
-				errChan <- err
-				return
-			}
-
-			if n > 0 {
-				_, writeErr := dst.Write(buf[:n])
-				if writeErr != nil {
-					errChan <- writeErr
-					return
-				}
-			}
-		}
-	}
-}
-
-func forward(dst net.Conn, src net.Conn, errChan chan error) {
-	_, err := io.Copy(dst, src)
-	errChan <- err
 }
