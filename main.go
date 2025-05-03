@@ -28,6 +28,8 @@ v 0.1 build the authentication screen
 v 0.2 add support for TLS
 v 0.3 renegotiate telnet after connection is closed
 v 0.4 provide a user and password list
+v 0.5 per user hosts lists!
+:wq
 */
 type Host struct {
 	Name string `json:"name"`
