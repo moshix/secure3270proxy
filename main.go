@@ -29,6 +29,7 @@ v 0.2 add support for TLS
 v 0.3 renegotiate telnet after connection is closed
 v 0.4 provide a user and password list
 v 0.5 per user hosts lists!
+v 0.6 selecing X or 99 from hosts view will disconnect session
 :wq
 */
 type Host struct {

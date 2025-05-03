@@ -7,6 +7,14 @@ It will be used to authenticate users to the proxy3270 library,
 and then pass the connection to remote mainframes as listed in the
 hosts lists pointd to by the secure3270.cnf file.
 check out github.com/racingmars/go3270 for the proxy3270 library.
+
+v 0.1 build the authentication screen
+v 0.2 add support for TLS
+v 0.3 renegotiate telnet after connection is closed
+v 0.4 provide a user and password list
+v 0.5 per user hosts lists!
+v 0.6 selecing X or 99 from hosts view will disconnect session
+:wq
 */
 
 import (
@@ -15,6 +23,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/racingmars/go3270"
@@ -68,12 +77,20 @@ func handleProxyConnection(conn net.Conn, config *Config, authSession *authSessi
 			})
 		}
 
+		// Add disconnect option on row 21
+		screen = append(screen, go3270.Field{
+			Row:     21,
+			Col:     4,
+			Content: "Enter 99 or X to disconnect",
+			Color:   go3270.White,
+		})
+
 		// Add selectoin feeld on row 23
 		screen = append(screen,
 			go3270.Field{
 				Row:     23,
 				Col:     4,
-				Content: "Enter selection (1-" + strconv.Itoa(len(config.Hosts)) + "): ",
+				Content: "Enter selection (1-" + strconv.Itoa(len(config.Hosts)) + ", 99, or X): ",
 				Color:   go3270.Red,
 			},
 			go3270.Field{
@@ -115,6 +132,14 @@ func handleProxyConnection(conn net.Conn, config *Config, authSession *authSessi
 
 		if resp.AID == go3270.AIDEnter {
 			selection := resp.Values["selection"]
+
+			// Check for disconnect commands (99 or X/x)
+			if selection == "99" || strings.ToUpper(selection) == "X" {
+				log.Printf("User %s requested disconnect with selection: %s", authSession.username, selection)
+				return // Exit the function to close the connection
+			}
+
+			// Otherwise, try to parse as a host number
 			num, err := strconv.Atoi(selection)
 			if err != nil || num < 1 || num > len(config.Hosts) {
 				continue
