@@ -92,7 +92,7 @@ func handleProxyConnection(conn net.Conn, config *Config, authSession *authSessi
 			go3270.Field{
 				Row:     23,
 				Col:     4,
-				Content: "Enter selection (1-" + strconv.Itoa(len(config.Hosts)) + ", 99, or X): ",
+				Content: "Enter selection (1-" + strconv.Itoa(len(config.Hosts)) + ", X): ",
 				Color:   go3270.Red,
 			},
 			go3270.Field{

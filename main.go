@@ -30,6 +30,7 @@ v 0.3 renegotiate telnet after connection is closed
 v 0.4 provide a user and password list
 v 0.5 per user hosts lists!
 v 0.6 selecing X or 99 from hosts view will disconnect session
+v 0.7 more permissive TLS settings
 :wq
 */
 type Host struct {
@@ -39,13 +40,16 @@ type Host struct {
 }
 
 type Config struct {
-	Hosts      []Host
-	Port       int
-	TLSPort    int
-	TLSCert    string
-	TLSKey     string
-	HostFile   string // Path to the hosts configuration file
-	TLSEnabled bool   // Flag to enable/disable TLS
+	Hosts         []Host
+	Port          int
+	TLSPort       int
+	TLSCert       string
+	TLSKey        string
+	HostFile      string // Path to the hosts configuration file
+	TLSEnabled    bool   // Flag to enable/disable TLS
+	TLSMinVersion string // Minimum TLS version (TLS1.0, TLS1.1, TLS1.2, TLS1.3)
+	TLSMaxVersion string // Maximum TLS version (TLS1.0, TLS1.1, TLS1.2, TLS1.3)
+	TLSTimeout    int    // Timeout in seconds for TLS connection negotiation
 }
 
 func loadConfig(filename string) (*Config, error) {
@@ -95,6 +99,14 @@ func loadConfig(filename string) (*Config, error) {
 			// Make sure to handle any whitespace or comments in the value
 			trimmedValue := strings.TrimSpace(strings.Split(value, "#")[0])
 			config.TLSEnabled = strings.ToLower(trimmedValue) == "enabled"
+		case "tlsminversion":
+			config.TLSMinVersion = value
+		case "tlsmaxversion":
+			config.TLSMaxVersion = value
+		case "tlstimeout":
+			if timeout, err := strconv.Atoi(value); err == nil && timeout > 0 {
+				config.TLSTimeout = timeout
+			}
 		}
 	}
 
@@ -125,6 +137,25 @@ func loadConfig(filename string) (*Config, error) {
 			log.Printf("  - TLS listener enabled on port: %d", config.TLSPort)
 			log.Printf("  - TLS certificate: %s", config.TLSCert)
 			log.Printf("  - TLS key: %s", config.TLSKey)
+
+			// Display TLS version settings
+			if config.TLSMinVersion != "" {
+				log.Printf("  - TLS minimum version: %s", config.TLSMinVersion)
+			} else {
+				log.Printf("  - TLS minimum version: TLS1.0 (default)")
+			}
+
+			if config.TLSMaxVersion != "" {
+				log.Printf("  - TLS maximum version: %s", config.TLSMaxVersion)
+			} else {
+				log.Printf("  - TLS maximum version: TLS1.3 (default)")
+			}
+
+			if config.TLSTimeout > 0 {
+				log.Printf("  - TLS connection timeout: %d seconds", config.TLSTimeout)
+			} else {
+				log.Printf("  - TLS connection timeout: 60 seconds (default)")
+			}
 		} else {
 			log.Printf("  - WARNING: TLS is enabled but configuration is incomplete")
 			if config.TLSPort == 0 {
@@ -192,12 +223,66 @@ func runTLSServer(config *Config, debug, debug3270, trace bool) error {
 		return fmt.Errorf("failed to load TLS certificates: %v", err)
 	}
 
+	// Set TLS version based on configuration or use defaults
+	var minVersion uint16 = tls.VersionTLS10 // Default minimum
+	var maxVersion uint16 = tls.VersionTLS13 // Default maximum
+
+	// Parse minimum TLS version from config
+	if config.TLSMinVersion != "" {
+		switch strings.ToLower(config.TLSMinVersion) {
+		case "tls1.0", "tls1", "tlsv1.0", "tlsv1":
+			minVersion = tls.VersionTLS10
+		case "tls1.1", "tlsv1.1":
+			minVersion = tls.VersionTLS11
+		case "tls1.2", "tlsv1.2":
+			minVersion = tls.VersionTLS12
+		case "tls1.3", "tlsv1.3":
+			minVersion = tls.VersionTLS13
+		default:
+			log.Printf("Warning: Unrecognized TLS minimum version '%s', using TLS 1.0", config.TLSMinVersion)
+		}
+	}
+
+	// Parse maximum TLS version from config
+	if config.TLSMaxVersion != "" {
+		switch strings.ToLower(config.TLSMaxVersion) {
+		case "tls1.0", "tls1", "tlsv1.0", "tlsv1":
+			maxVersion = tls.VersionTLS10
+		case "tls1.1", "tlsv1.1":
+			maxVersion = tls.VersionTLS11
+		case "tls1.2", "tlsv1.2":
+			maxVersion = tls.VersionTLS12
+		case "tls1.3", "tlsv1.3":
+			maxVersion = tls.VersionTLS13
+		default:
+			log.Printf("Warning: Unrecognized TLS maximum version '%s', using TLS 1.3", config.TLSMaxVersion)
+		}
+	}
+
+	// Log TLS version configuration
+	log.Printf("Using TLS version range: %s to %s",
+		tlsVersionToString(minVersion),
+		tlsVersionToString(maxVersion))
+
 	tlsConfig := &tls.Config{
 		Certificates:             []tls.Certificate{cert},
-		MinVersion:               tls.VersionTLS10,
-		MaxVersion:               tls.VersionTLS13,
+		MinVersion:               minVersion,
+		MaxVersion:               maxVersion,
 		PreferServerCipherSuites: true,
 		InsecureSkipVerify:       true,
+		ClientAuth:               tls.NoClientCert,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		},
 	}
 
 	listener, err := tls.Listen("tcp", fmt.Sprintf(":%d", config.TLSPort), tlsConfig)
@@ -209,14 +294,16 @@ func runTLSServer(config *Config, debug, debug3270, trace bool) error {
 	log.Printf("TLS Proxy3270 listening on port %d", config.TLSPort)
 
 	for {
-		// Accept connections with a timeout to allow for periodic health checks
-		listener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Minute))
+		// Accept connections without a timeout - TLS listeners don't support SetDeadline
+		// like TCP listeners do. We'll handle timeouts at the connection level instead.
 		conn, err := listener.Accept()
 
 		if err != nil {
-			// Check if this is just a timeout (which we use for health checking)
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // This is just our periodic timeout, not a real error
+			// Check if we should continue or return the error
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				log.Printf("Temporary TLS accept error: %v, continuing...", err)
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
 			return fmt.Errorf("TLS accept error: %v", err)
 		}
@@ -233,8 +320,23 @@ func handleTLSConnection(conn net.Conn, config *Config, debug, debug3270, trace 
 	// For TLS connections, add a small delay to ensure handshake completes
 	time.Sleep(500 * time.Millisecond)
 
-	// Set initial timeout for telnet negotiation
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	// Set initial timeout for telnet negotiation - use configured timeout or default to 60 seconds
+	timeoutSeconds := 60
+	if config.TLSTimeout > 0 {
+		timeoutSeconds = config.TLSTimeout
+	}
+	conn.SetDeadline(time.Now().Add(time.Duration(timeoutSeconds) * time.Second))
+
+	// Log TLS connection details if debugging is enabled
+	if debug {
+		if tlsConn, ok := conn.(*tls.Conn); ok {
+			tlsState := tlsConn.ConnectionState()
+			log.Printf("TLS Connection: Version=%v, CipherSuite=%v, HandshakeComplete=%v",
+				tlsVersionToString(tlsState.Version),
+				tls.CipherSuiteName(tlsState.CipherSuite),
+				tlsState.HandshakeComplete)
+		}
+	}
 
 	// Negotiate telnet protocol with direct error handling
 	if err := go3270.NegotiateTelnet(conn); err != nil {
@@ -290,6 +392,24 @@ func handleTLSConnection(conn net.Conn, config *Config, debug, debug3270, trace 
 
 	// Now proceed with the normal proxy3270 host selection and connection handling
 	handleProxyConnection(conn, &userConfig, authSession)
+}
+
+// tlsVersionToString converts a TLS version constant to a human-readable string
+func tlsVersionToString(version uint16) string {
+	switch version {
+	case tls.VersionSSL30:
+		return "SSLv3"
+	case tls.VersionTLS10:
+		return "TLSv1.0"
+	case tls.VersionTLS11:
+		return "TLSv1.1"
+	case tls.VersionTLS12:
+		return "TLSv1.2"
+	case tls.VersionTLS13:
+		return "TLSv1.3"
+	default:
+		return fmt.Sprintf("Unknown(0x%04X)", version)
+	}
 }
 
 func main() {
@@ -362,10 +482,16 @@ func runStandardServer(config *Config, debug, debug3270, trace bool) error {
 	log.Printf("Proxy3270 listening on port %d", config.Port)
 	log.Printf("Secure3270Proxy startup complete")
 
+	// Safely access the underlying TCP listener to set deadlines
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		return fmt.Errorf("expected TCP listener but got %T", listener)
+	}
+
 	for {
 		// Accept connections with a timeout to allow for periodic health checks
-		listener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Minute))
-		conn, err := listener.Accept()
+		tcpListener.SetDeadline(time.Now().Add(1 * time.Minute))
+		conn, err := tcpListener.Accept()
 
 		if err != nil {
 			// Check if this is just a timeout (which we use for health checking)
