@@ -31,6 +31,7 @@ v 0.4 provide a user and password list
 v 0.5 per user hosts lists!
 v 0.6 selecing X or 99 from hosts view will disconnect session
 v 0.7 more permissive TLS settings
+v 0.8 add F11 key to display clock from proxy menu
 :wq
 */
 type Host struct {

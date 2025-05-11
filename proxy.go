@@ -87,6 +87,14 @@ func handleProxyConnection(conn net.Conn, config *Config, authSession *authSessi
 			Color:   go3270.White,
 		})
 
+		// Add function key help for clock (F11)
+		screen = append(screen, go3270.Field{
+			Row:     21,
+			Col:     40,
+			Content: "F11=Clock",
+			Color:   go3270.White,
+		})
+
 		// Add selectoin feeld on row 23
 		screen = append(screen,
 			go3270.Field{
@@ -121,7 +129,7 @@ func handleProxyConnection(conn net.Conn, config *Config, authSession *authSessi
 			rules,
 			fieldValues,
 			[]go3270.AID{go3270.AIDEnter},
-			[]go3270.AID{},
+			[]go3270.AID{go3270.AIDPF11, go3270.AIDPF12},
 			"",
 			23, 37, // Position cursor at selection field on row 23
 			conn,
@@ -130,6 +138,23 @@ func handleProxyConnection(conn net.Conn, config *Config, authSession *authSessi
 		if err != nil {
 			log.Printf("Screen show error: %v", err)
 			return
+		}
+
+		if resp.AID == go3270.AIDPF11 {
+			// Show the clock screen
+			if err := ShowClock(conn, authSession.username); err != nil {
+				log.Printf("Error showing clock: %v", err)
+			}
+			continue
+		}
+
+		if resp.AID == go3270.AIDPF12 {
+			// Show the clock screen with IBM logo already displayed
+			// We'll simulate pressing F12 by setting a flag
+			if err := ShowClockWithLogo(conn, authSession.username); err != nil {
+				log.Printf("Error showing IBM logo: %v", err)
+			}
+			continue
 		}
 
 		if resp.AID == go3270.AIDEnter {
